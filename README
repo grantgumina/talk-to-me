@@ -1,2 +1,9 @@
+# Requirements
+1. Ruby
+2. Bundler
 
+# Setup
+`bundle install`
 
+# Run
+`rackup config.ru`
