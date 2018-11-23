@@ -1,11 +1,9 @@
 class User < ActiveRecord::Base
   include BCrypt
-  
+
   # validates :username, presence: true
   # validates :password_hash, presence: true
   before_save :downcase_fields
-
-  attr_accessor :username, :password_hash, :token
 
   def generate_token!
     self.token = SecureRandom.urlsafe_base64(64)

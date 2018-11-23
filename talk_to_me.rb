@@ -36,14 +36,13 @@ class TalkToMe < Sinatra::Base
   end
 
   def authenticate!
-    @user = User.find(token: @request_payload[:token])
+    @user = User.find_by(token: @request_payload[:token])
     halt 403 unless @user
   end
 
   post '/login' do
     params = @request_payload[:user]
-
-    user = User.find(username: params[:username])
+    user = User.find_by(username: params[:username])
     if user.password == params[:password] #compare the hash to the string; magic
       #log the user in and generate a new token
       user.generate_token!      
@@ -51,7 +50,7 @@ class TalkToMe < Sinatra::Base
       {token: user.token}.to_json # make sure you give the user the token
     else
       #tell the user they aren't logged in
-      "Hey you're not logged in"
+      "Login unsuccessful"
     end
   end
   
@@ -59,67 +58,79 @@ class TalkToMe < Sinatra::Base
     json UrlAudioLocationMapping.all
   end
 
-  post '/audio' do
-    # authenticate!
-    
+  def generate_audio(url)
     uuid = SecureRandom.uuid
 
+    # Get audio recording of article
+    doc = Pismo::Document.new(url)
+    
+    # Break up the document body into 3000 character chunks, but don't cutoff words
+    text_array = doc.body.scan(/.{1,3000}\W|.{1,3000}/).map(&:strip)
+  
+    polly = Aws::Polly::Client.new
+  
+    file_locations = []
+  
+    # Get MP3s for each chunk of characters
+    text_array.each_with_index do |text, index|
+      
+      resp = polly.synthesize_speech({
+        output_format: "mp3",
+        text: text,
+        voice_id: "Matthew",
+      })
+      
+      mp3_file_location = "/tmp/article_#{uuid}_#{index}_.mp3"
+  
+      IO.copy_stream(resp.audio_stream, mp3_file_location)
+      puts "#{mp3_file_location}"
+      file_locations.push(mp3_file_location)
+  
+      # just to save some money during testing
+      if index == 1
+        break
+      end
+    end
+    
+    if !file_locations.empty?
+  
+      output_file_location = "audio/ttm_#{uuid}.mp3"
+  
+      # Stitch together all the MP3s we get from Polly
+      combiner = Sox::Combiner.new(file_locations, :combine => :concatenate)
+  
+      # Save audio in storage
+      combiner.write(output_file_location)
+
+      # Create DB entry for audio/URL
+      UrlAudioLocationMapping.create(url: url, audio_location: output_file_location)
+      
+      # Send user the mp3
+      return output_file_location
+    end
+  end
+
+  post '/audio' do
+    authenticate!
+
     url = @request_payload[:url]
+    url_mp3_location = ""
   
     # Lookup if article has been audioized before
     url_audio_location_mappings = UrlAudioLocationMapping.select(:audio_location).where('url = ?', url)
 
     if !url_audio_location_mappings.empty?
-      send_file(url_audio_location_mappings.first.audio_location)
+      # check to see if file exists before sending it...
+      if (File.exist?(url_audio_location_mappings.first.audio_location))
+        url_mp3_location = url_audio_location_mappings.first.audio_location
+      else
+        url_mp3_location = generate_audio(url)
+      end
     else
-      # Article hasn't been turned into audio yet, so do that
-
-      # Get audio recording of article
-      doc = Pismo::Document.new(url)
-      
-      # Break up the document body into 3000 character chunks, but don't cutoff words
-      text_array = doc.body.scan(/.{1,3000}\W|.{1,3000}/).map(&:strip)
-    
-      polly = Aws::Polly::Client.new
-    
-      file_locations = []
-    
-      # Get MP3s for each chunk of characters
-      text_array.each_with_index do |text, index|
-        
-        resp = polly.synthesize_speech({
-          output_format: "mp3",
-          text: text,
-          voice_id: "Matthew",
-        })
-        
-        mp3_file_location = "/tmp/article_#{uuid}_#{index}_.mp3"
-    
-        IO.copy_stream(resp.audio_stream, mp3_file_location)
-        puts "#{mp3_file_location}"
-        file_locations.push(mp3_file_location)
-    
-        if index == 2
-          break
-        end
-      end
-    
-      if !file_locations.empty?
-    
-        output_file_location = "audio/ttm_#{uuid}.mp3"
-    
-        # Stitch together all the MP3s we get from Polly
-        combiner = Sox::Combiner.new(file_locations, :combine => :concatenate)
-    
-        # Save audio in storage
-        combiner.write(output_file_location)
-
-        # Create DB entry for audio/URL
-        UrlAudioLocationMapping.create(url: url, audio_location: output_file_location)
-        
-        # Send user the mp3
-        send_file(output_file_location)
-      end
+      url_mp3_location = generate_audio(url)
     end
+
+    send_file(url_mp3_location)
+
   end
 end
