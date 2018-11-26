@@ -14,8 +14,6 @@ require 'rest-client'
 require_relative 'app/models/user.rb'
 require_relative 'app/models/url_audio_location_mapping.rb'
 
-set :database_file, 'config/database.yml'
-
 # Business Logic
 class TalkToMe < Sinatra::Base
 
@@ -24,6 +22,7 @@ class TalkToMe < Sinatra::Base
     set :views, 'app/views'
     enable :sessions
     set :session_secret, "password_security"
+    set :database_file, 'config/database.yml'
 
     # Get Heroku config variables
     set :mailgun_api_key, ENV['MAILGUN_API_KEY']
