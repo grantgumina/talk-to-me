@@ -14,6 +14,8 @@ require 'rest-client'
 require_relative 'app/models/user.rb'
 require_relative 'app/models/url_audio_location_mapping.rb'
 
+set :database_file, 'config/database.yml'
+
 # Business Logic
 class TalkToMe < Sinatra::Base
 
@@ -28,9 +30,6 @@ class TalkToMe < Sinatra::Base
     set :s3_key, ENV['S3_KEY']
     set :s3_secret, ENV['S3_SECRET']
     set :s3_bucket_name, ENV['S3_BUCKET_NAME']
-
-    set :database_file, 'config/database.yml'
-
   end
 
   before ['/login', '/protected/*'] do
