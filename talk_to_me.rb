@@ -2,12 +2,13 @@ require 'sinatra'
 require 'sinatra/json'
 require 'sinatra/activerecord'
 require 'aws-sdk-polly'
+require 'aws-sdk-s3'
 require 'pismo'
 require 'securerandom'
 require 'ruby-sox'
 require 'bcrypt'
-
-set :database_file, 'config/database.yml'
+require 'mailgun-ruby'
+require 'rest-client'
 
 # Load up models
 require_relative 'app/models/user.rb'
@@ -21,9 +22,18 @@ class TalkToMe < Sinatra::Base
     set :views, 'app/views'
     enable :sessions
     set :session_secret, "password_security"
+
+    # Get Heroku config variables
+    set :mailgun_api_key, ENV['MAILGUN_API_KEY']
+    set :s3_key, ENV['S3_KEY']
+    set :s3_secret, ENV['S3_SECRET']
+    set :s3_bucket_name, ENV['S3_BUCKET_NAME']
+
+    set :database_file, 'config/database.yml'
+
   end
 
-  before do
+  before ['/login', '/protected/*'] do
     begin
       if request.body.read(1)
         request.body.rewind
@@ -33,6 +43,10 @@ class TalkToMe < Sinatra::Base
       request.body.rewind
       puts "The body #{request.body.read} was not JSON"
     end
+  end
+
+  before '/protected/*' do
+    authenticate!
   end
 
   def authenticate!
@@ -45,7 +59,7 @@ class TalkToMe < Sinatra::Base
     user = User.find_by(username: params[:username])
     if user.password == params[:password] #compare the hash to the string; magic
       #log the user in and generate a new token
-      user.generate_token!      
+      user.generate_token!
 
       {token: user.token}.to_json # make sure you give the user the token
     else
@@ -58,11 +72,88 @@ class TalkToMe < Sinatra::Base
     json UrlAudioLocationMapping.all
   end
 
+  post '/protected/audio' do
+
+    audio_location = retrieve_audio_location(@request_payload[:url])
+
+    # Return an error if we couldn't get article audio
+    audio_halt 200, {error: "Audio couldn't be retrieved"}.to_json unless !audio_location.blank?
+
+    {audio_location: audio_location}.to_json
+
+  end
+
+  post '/request-audio' do
+    user_email = params["sender"]
+    url = params["subject"]
+
+    # As long as the sender has an authorized email account... yes I know this is hacky
+    if !User.find_by(username: user_email).blank?
+
+      # Search for the article in our cache
+      url_audio_location_mappings = UrlAudioLocationMapping.select(:uuid).where('url = ?', url)
+
+      if url_audio_location_mappings.empty?
+        # If it's not there, generate and store audio
+        audio_uuid = generate_audio(url)
+      else
+        # Otherwise return the cached article location
+        audio_uuid = url_audio_location_mappings.first.uuid
+      end
+
+      # Download the audio file
+      tmp_audio_file_location = "/tmp/#{audio_uuid}.mp3"
+
+      Aws.config.update({
+        region: 'us-west-2',
+        credentials: Aws::Credentials.new(settings.s3_key, settings.s3_secret)
+      })
+
+      s3 = Aws::S3::Resource.new(client: Aws::S3::Client.new(http_wire_trace: true))
+
+      audio_object = s3.bucket(settings.s3_bucket_name).object(audio_uuid)
+      audio_object.get(response_target: tmp_audio_file_location)
+
+      # Attach it to an email and send it to the user
+      RestClient.post "https://api:#{settings.mailgun_api_key}@api.mailgun.net/v3/grantgumina.com/messages",
+        :from => "Talk To Me <mailgun@grantgumina.com>",
+        :to => user_email,
+        :subject => "Your article audio is ready",
+        :text => "Audio file attached",
+        :attachment => File.new(File.join("/tmp/", "#{audio_uuid}.mp3"))
+    else 
+      {message: "You're not a user"}.to_json
+    end
+
+  end
+  
+  def retrieve_audio_location(url)
+    url_audio_location_mappings = UrlAudioLocationMapping.select(:audio_location).where('url = ?', url)
+
+    if url_audio_location_mappings.empty?
+      audio_uuid = generate_audio(url)
+      audio_location = UrlAudioLocationMapping.select(:audio_location).where('uuid = ?', audio_uuid)
+    else
+      # Otherwise return the cached article location
+      audio_location = url_audio_location_mappings.first.audio_location
+    end
+
+    # Return an error if we couldn't get article audio
+    halt 200, {error: "Audio couldn't be retrieved"}.to_json unless !audio_location.blank?
+
+    return audio_location
+  end
+  
   def generate_audio(url)
     uuid = SecureRandom.uuid
 
     # Get audio recording of article
     doc = Pismo::Document.new(url)
+
+    # Leave function if Pismo wasn't able to get article body
+    if doc.body.blank?
+      return nil
+    end
     
     # Break up the document body into 3000 character chunks, but don't cutoff words
     text_array = doc.body.scan(/.{1,3000}\W|.{1,3000}/).map(&:strip)
@@ -83,54 +174,44 @@ class TalkToMe < Sinatra::Base
       mp3_file_location = "/tmp/article_#{uuid}_#{index}_.mp3"
   
       IO.copy_stream(resp.audio_stream, mp3_file_location)
-      puts "#{mp3_file_location}"
       file_locations.push(mp3_file_location)
   
       # just to save some money during testing
-      if index == 1
-        break
-      end
+      # if index == 1
+      #   break
+      # end
+
     end
     
+    # Check to see that the files have actually been created
     if !file_locations.empty?
   
-      output_file_location = "audio/ttm_#{uuid}.mp3"
-  
+      output_file_location = "/tmp/ttm_#{uuid}.mp3"
+
       # Stitch together all the MP3s we get from Polly
       combiner = Sox::Combiner.new(file_locations, :combine => :concatenate)
   
       # Save audio in storage
       combiner.write(output_file_location)
 
-      # Create DB entry for audio/URL
-      UrlAudioLocationMapping.create(url: url, audio_location: output_file_location)
+      Aws.config.update({
+        region: 'us-west-2',
+        credentials: Aws::Credentials.new(settings.s3_key, settings.s3_secret)
+      })
+
+    s3 = Aws::S3::Resource.new(client: Aws::S3::Client.new(http_wire_trace: true))
+
+      article_mp3_object = s3.bucket(settings.s3_bucket_name).object(uuid)
+      article_mp3_object.upload_file(output_file_location)
+
+      article_mp3_object_url = article_mp3_object.public_url
       
-      # Send user the mp3
-      return output_file_location
+      # Create DB entry for audio/URL
+      UrlAudioLocationMapping.create(url: url, audio_location: article_mp3_object_url, uuid: uuid)
+      
+      # Return uuid of audio object
+      return uuid
     end
   end
 
-  post '/audio' do
-    authenticate!
-
-    url = @request_payload[:url]
-    url_mp3_location = ""
-  
-    # Lookup if article has been audioized before
-    url_audio_location_mappings = UrlAudioLocationMapping.select(:audio_location).where('url = ?', url)
-
-    if !url_audio_location_mappings.empty?
-      # check to see if file exists before sending it...
-      if (File.exist?(url_audio_location_mappings.first.audio_location))
-        url_mp3_location = url_audio_location_mappings.first.audio_location
-      else
-        url_mp3_location = generate_audio(url)
-      end
-    else
-      url_mp3_location = generate_audio(url)
-    end
-
-    send_file(url_mp3_location)
-
-  end
 end

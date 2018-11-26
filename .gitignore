@@ -2,3 +2,6 @@
 Gemfile.lock
 config/database.yml
 audio/
+log/
+.env
+*.paw

@@ -7,3 +7,7 @@
 
 # Run
 `rackup config.ru`
+ 
+ or with Heroku (locally)
+
+ `heroku local web`
