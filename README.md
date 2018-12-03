@@ -1,4 +1,4 @@
-Simple Sinatra webapp which uses Amazon's Polly API and Mailgun to accept emails with an article url as the subject line, and return an MP3 of that narrated article. You'll need to 
+Simple Sinatra webapp which uses Amazon's Polly API and Mailgun to accept emails with an article url as the subject line, and return an MP3 of that narrated article.
 
 # Getting Started
 
@@ -11,8 +11,9 @@ Simple Sinatra webapp which uses Amazon's Polly API and Mailgun to accept emails
 ## Setup
 1. `bundle install`
 2. `rake db:setup`
-3. Make sure to setup your AWS SDK. The bundle install command should have installed it for you, so just make sure to edit `~/.aws/credentials` and include your AWS access key and secret key.
-4. Edit config/database.yml:
+3. Create the following environment variables (MAILGUN_API_KEY, S3_KEY, S3_SECRET, S3_BUCKET_NAME)
+4. Make sure to setup your AWS SDK. The bundle install command should have installed it for you, so just make sure to edit `~/.aws/credentials` and include your AWS access key and secret key.
+5. Edit config/database.yml:
 
 ```
 development:
